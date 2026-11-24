@@ -987,7 +987,7 @@
       '<div class="grid g5 gap16">' +
       kpi("Reported by LandBank", P(T("lbReported")), N(rows.reduce((a, r) => a + r.lbCount, 0)) + " transactions") +
       kpi("Approved / validated", P(T("validated")), "Matched to Site Report · approved " + P(T("approved"))) +
-      kpi("Actually reimbursed", P(T("reimbursed")), recs.filter((r) => !r.void).length + " bank credit(s) recorded", "good") +
+      kpi("Actually reimbursed", P(T("reimbursed")), new Set(recs.filter((r) => !r.void).map((r) => r.batch || r.id)).size + " bank payment(s) recorded", "good") +
       kpi("Outstanding / unpaid", P(T("outstanding")), "Validated not yet received", T("outstanding") > 0.005 ? "bad" : "") +
       kpi("Pending validation", P(T("pending")), "Site claims not yet matched to LandBank") + "</div>" +
       '<div class="card gap16"><div class="hd"><h3>DOE subsidy receivable by claim period</h3><span class="grow"></span>' + (S.ro ? "" : '<button class="btn" id="add-app">Record approval</button><button class="btn primary" id="add-rec">Record reimbursement</button>') + '<button class="btn" id="rv-xl">' + ic("dl") + 'Export</button></div><div class="bd flush"><div class="tbl-wrap"><table class="t"><thead><tr><th>Claim Period</th><th>Site / Station</th><th class="n">Total Liters</th><th class="n">Total Subsidy</th><th class="n">LandBank Reported</th><th class="n">Validated</th><th class="n">Approved</th><th class="n">Confirmed Reimbursement</th><th class="n">Outstanding Receivable</th><th>Claim Status</th><th>Date Received</th><th>Remarks</th></tr></thead><tbody>' +
@@ -1002,111 +1002,252 @@
     bindDaily(el);
   }
 
-  /* ---------- Daily LandBank report checklist (mark each daily report as paid) ---------- */
-  function dailyLbRows() {
+  /* ---------- Reimbursement tracking: bank payments matched to daily LandBank reports ---------- */
+  function dailyLbRows(ignorePeriod) {
     const days = new Map();
     for (const it of (S.result ? S.result.items : [])) {
       if (!it.lb || it.status === ST.DUP) continue;
       const l = it.lb, k = l.station + "|" + l.date;
-      if (!inScope(l.station, l.date.slice(0, 7))) continue;
+      if (S.filter.station && l.station !== S.filter.station) continue;
+      if (!ignorePeriod && S.filter.period && l.date.slice(0, 7) !== S.filter.period) continue;
       let d = days.get(k);
-      if (!d) { d = { key: k, station: l.station, date: l.date, period: l.date.slice(0, 7), files: new Set(), count: 0, liters: 0, amount: 0, matched: 0, matchedAmt: 0, open: 0, timing: 0 }; days.set(k, d); }
+      if (!d) { d = { key: k, station: l.station, date: l.date, period: l.date.slice(0, 7), files: new Set(), count: 0, liters: 0, amount: 0, matched: 0, open: 0, timing: 0 }; days.set(k, d); }
       d.files.add(l.fileName); d.count++; d.liters += l.liters || 0; d.amount += l.subsidy;
-      if (it.site && !it.flags.suggestion) { d.matched++; d.matchedAmt += it.lbSubsidy; }
+      if (it.site && !it.flags.suggestion) d.matched++;
       if (it.status !== ST.MATCHED && !it.resolved) { if (it.flags.timing) d.timing++; else d.open++; }
     }
     const out = [];
     for (const d of days.values()) {
       const rc = S.receipts.filter((r) => !r.void && r.lbKey === d.key);
-      const paid = R.r2(rc.reduce((a, r) => a + (+r.amount || 0), 0));
-      Object.assign(d, { liters: R.r3(d.liters), amount: R.r2(d.amount), matchedAmt: R.r2(d.matchedAmt), files: Array.from(d.files), receipts: rc, paid, diff: R.r2(paid - d.amount),
-        status: rc.length ? "Paid" : "Pending",
+      Object.assign(d, { liters: R.r3(d.liters), amount: R.r2(d.amount), files: Array.from(d.files), receipts: rc,
+        paid: R.r2(rc.reduce((a, r) => a + (+r.amount || 0), 0)), status: rc.length ? "Reimbursed" : "Unpaid",
         recon: d.open ? d.open + " open item(s)" : d.timing ? d.timing + " cut-off item(s)" : "Fully reconciled",
-        lastDate: rc.map((r) => r.dateReceived).sort().pop() || "", refs: Array.from(new Set(rc.map((r) => r.ref))).join(", ") });
+        payDate: rc.map((r) => r.dateReceived).sort().pop() || "", refs: Array.from(new Set(rc.map((r) => r.ref))).join(", "), batches: Array.from(new Set(rc.map((r) => r.batch).filter(Boolean))) });
       out.push(d);
     }
-    return out.sort((a, b) => (a.date + a.station).localeCompare(b.date + b.station));
+    return out.sort((a, b) => (a.station + a.date).localeCompare(b.station + b.date));
   }
+  function bankPayments() {
+    const by = new Map();
+    for (const r of S.receipts) {
+      if (!r.batch) continue;
+      let p = by.get(r.batch);
+      if (!p) { p = { batch: r.batch, ref: r.ref, date: r.dateReceived, station: r.station, receipts: [], remarks: r.remarks || "", note: r.override || "", userId: r.userId, userName: r.userName, ts: r.ts }; by.set(r.batch, p); }
+      p.receipts.push(r);
+    }
+    const out = [];
+    for (const p of by.values()) {
+      const live = p.receipts.filter((r) => !r.void);
+      p.void = !live.length;
+      const use = live.length ? live : p.receipts;
+      const dayR = use.filter((r) => r.lbKey);
+      p.days = dayR.map((r) => r.lbDate).sort();
+      p.from = p.days[0] || ""; p.to = p.days[p.days.length - 1] || "";
+      p.daysTotal = R.r2(dayR.reduce((a, r) => a + (+r.amount || 0), 0));
+      p.bank = R.r2(use.reduce((a, r) => a + (+r.amount || 0), 0));
+      p.diff = R.r2(p.bank - p.daysTotal);
+      p.voidReason = p.void ? (p.receipts[0].voidReason || "") : "";
+      if (S.filter.station && p.station !== S.filter.station) continue;
+      if (S.filter.period && !p.days.some((d) => d.startsWith(S.filter.period)) && !(p.date || "").startsWith(S.filter.period)) continue;
+      out.push(p);
+    }
+    return out.sort((a, b) => (b.date + b.ts).localeCompare(a.date + a.ts));
+  }
+  function coverageGaps(days) {
+    const runs = [], missing = [];
+    const byStation = {};
+    for (const d of days) (byStation[d.station] = byStation[d.station] || []).push(d);
+    for (const st of Object.keys(byStation)) {
+      const list = byStation[st].sort((a, b) => a.date.localeCompare(b.date));
+      let run = null;
+      for (let i = 0; i < list.length; i++) {
+        const d = list[i], prev = list[i - 1];
+        const consecutive = prev && R.toMs(d.date) - R.toMs(prev.date) === 86400000;
+        if (d.status === "Unpaid") {
+          if (run && consecutive && prev.status === "Unpaid") { run.to = d.date; run.count++; run.amount += d.amount; run.days.push(d); }
+          else { run = { station: st, from: d.date, to: d.date, count: 1, amount: d.amount, days: [d] }; runs.push(run); }
+        } else run = null;
+      }
+      const have = new Set(list.map((d) => d.date));
+      let gap = null;
+      for (let t = R.toMs(list[0].date); t <= R.toMs(list[list.length - 1].date); t += 86400000) {
+        const ds = R.msToDate(t);
+        if (!have.has(ds)) { if (gap && R.toMs(ds) - R.toMs(gap.to) === 86400000) { gap.to = ds; gap.count++; } else { gap = { station: st, from: ds, to: ds, count: 1 }; missing.push(gap); } }
+      }
+    }
+    runs.forEach((r) => (r.amount = R.r2(r.amount)));
+    return { runs, missing };
+  }
+  const rangeTxt = (a, b) => (a === b ? a : a + " → " + b);
   function dailyCardHtml() {
     const all = dailyLbRows();
+    const paidDays = all.filter((d) => d.status === "Reimbursed"), unpaid = all.filter((d) => d.status === "Unpaid");
+    const gaps = coverageGaps(all);
+    const pays = bankPayments();
+    const livePays = pays.filter((p) => !p.void);
+    const mini = (lb, v, s, cls) => '<div class="card kpi ' + (cls || "") + '" style="box-shadow:none"><div class="lb">' + lb + '</div><div class="v" style="font-size:19px">' + v + '</div><div class="s">' + s + "</div></div>";
+    // --- coverage card
+    let h = '<div class="card gap16"><div class="hd"><h3>Reimbursement coverage</h3><span class="sub">by daily LandBank report · tracked separately from Site vs LandBank discrepancies</span></div><div class="bd">' +
+      '<div class="grid g4">' +
+      mini("Daily LandBank reports", N(all.length), "₱" + N(R.r2(all.reduce((a, d) => a + d.amount, 0)), 2) + " reported") +
+      mini("Reimbursed", N(paidDays.length), P(R.r2(paidDays.reduce((a, d) => a + d.amount, 0))) + " covered by " + livePays.length + " bank payment(s)", "good") +
+      mini("Unpaid / not yet covered", N(unpaid.length), P(R.r2(unpaid.reduce((a, d) => a + d.amount, 0))), unpaid.length ? "bad" : "") +
+      mini("Missing LandBank reports", N(gaps.missing.reduce((a, g) => a + g.count, 0)) + " day(s)", "dates with no report uploaded", gaps.missing.length ? "bad" : "") + "</div>" +
+      '<div class="grid g2" style="margin-top:14px"><div><div class="small" style="font-weight:600;margin-bottom:6px">Unpaid periods</div>' +
+      (gaps.runs.length ? '<table class="t"><thead><tr><th>Station</th><th>Period not yet reimbursed</th><th class="n">Reports</th><th class="n">LandBank amount</th><th></th></tr></thead><tbody>' +
+        gaps.runs.map((r, i) => '<tr><td class="small">' + esc(r.station) + '</td><td style="white-space:nowrap"><b>' + esc(rangeTxt(r.from, r.to)) + '</b></td><td class="n">' + r.count + '</td><td class="n">' + P(r.amount) + "</td><td>" + (S.ro ? "" : '<button class="btn sm" data-payrun="' + i + '">Record payment</button>') + "</td></tr>").join("") + "</tbody></table>"
+        : '<div class="small muted">' + (all.length ? "Every daily LandBank report in scope is covered by a bank payment." : "No LandBank reports in scope.") + "</div>") +
+      '</div><div><div class="small" style="font-weight:600;margin-bottom:6px">Missing daily LandBank reports</div>' +
+      (gaps.missing.length ? '<table class="t"><thead><tr><th>Station</th><th>Dates with no LandBank report</th><th class="n">Days</th></tr></thead><tbody>' + gaps.missing.map((g) => '<tr><td class="small">' + esc(g.station) + '</td><td style="white-space:nowrap">' + esc(rangeTxt(g.from, g.to)) + '</td><td class="n">' + g.count + "</td></tr>").join("") + '</tbody></table><div class="xs muted" style="margin-top:4px">Upload these reports, or confirm with LandBank that there were no DOE transactions on those dates.</div>'
+        : '<div class="small muted">' + (all.length ? "None — every date between the first and last report has a LandBank report." : "—") + "</div>") +
+      "</div></div></div></div>";
+    // --- bank payments card
+    h += '<div class="card gap16"><div class="hd"><h3>Bank payments (reimbursements)</h3><span class="sub">' + livePays.length + " payment(s) · " + P(R.r2(livePays.reduce((a, p) => a + p.bank, 0))) + ' received</span><span class="grow"></span>' + (S.ro ? "" : '<button class="btn primary" id="pay-new">' + ic("check") + "Record bank payment</button>") + '</div><div class="bd flush"><div class="tbl-wrap" style="max-height:50vh"><table class="t"><thead><tr><th>Date received</th><th>Bank reference</th><th>Station</th><th>Period covered</th><th class="n">Reports</th><th class="n">Daily reports total</th><th class="n">Bank amount</th><th class="n">Difference</th><th>Recorded by</th><th></th></tr></thead><tbody>' +
+      (pays.length ? pays.map((p) => '<tr style="' + (p.void ? "opacity:.5;text-decoration:line-through" : "") + '"><td style="white-space:nowrap">' + esc(p.date) + "</td><td>" + esc(p.ref) + (p.remarks ? '<div class="xs muted">' + esc(p.remarks) + "</div>" : "") + (p.void ? '<div class="xs neg">Undone: ' + esc(p.voidReason) + "</div>" : "") + '</td><td class="small">' + esc(p.station) + '</td><td style="white-space:nowrap"><b>' + esc(p.from ? rangeTxt(p.from, p.to) : "—") + '</b></td><td class="n">' + p.days.length + '</td><td class="n">' + P(p.daysTotal) + '</td><td class="n"><b>' + P(p.bank) + '</b></td><td class="n ' + (Math.abs(p.diff) > 0.004 ? "neg" : "") + '">' + (Math.abs(p.diff) > 0.004 ? P(p.diff) : "—") + (p.note && Math.abs(p.diff) > 0.004 ? '<div class="xs muted" style="text-align:left">' + esc(p.note) + "</div>" : "") + '</td><td class="small">' + esc(who(p)) + '<div class="xs muted">' + fmtTs(p.ts) + '</div></td><td><div style="display:flex;flex-direction:column;gap:4px"><button class="btn sm" data-paydet="' + esc(p.batch) + '">Days</button>' + (!p.void && !S.ro ? '<button class="btn sm danger" data-payundo="' + esc(p.batch) + '">Undo</button>' : "") + "</div></td></tr>").join("")
+        : '<tr><td colspan="10"><div class="empty small">No bank payments recorded yet. Click <b>Record bank payment</b> and enter the amount from the bank statement.</div></td></tr>') +
+      "</tbody></table></div></div></div>";
+    // --- daily reports card
     const list = all.filter((d) => !S.dly.status || d.status === S.dly.status);
-    const paidN = all.filter((d) => d.status === "Paid").length;
-    const pend = all.filter((d) => d.status === "Pending");
-    const pendAmt = R.r2(pend.reduce((a, d) => a + d.amount, 0));
-    const nSel = list.filter((d) => S.dly.sel.has(d.key) && d.status === "Pending").length;
+    const nSel = list.filter((d) => S.dly.sel.has(d.key) && d.status === "Unpaid").length;
     const reconChip = (d) => '<span class="chip ' + (d.open ? "critical" : d.timing ? "warn" : "good") + '" style="cursor:pointer" data-dayrecon="' + esc(d.key) + '" title="Show this day in Reconciliation">' + esc(d.recon) + "</span>";
-    const canTick = (d) => d.status === "Pending" && !S.ro;
-    return '<div class="card gap16"><div class="hd" style="flex-wrap:wrap"><h3>Daily LandBank reports</h3><span class="sub">' + paidN + " of " + all.length + " marked paid · " + pend.length + " pending (" + P(pendAmt) + ')</span><span class="grow"></span>' +
-      '<select id="dly-st"><option value=""' + (!S.dly.status ? " selected" : "") + '>All reports</option><option value="Pending"' + (S.dly.status === "Pending" ? " selected" : "") + '>Pending only</option><option value="Paid"' + (S.dly.status === "Paid" ? " selected" : "") + ">Paid only</option></select>" +
-      (S.ro ? "" : '<button class="btn primary" id="dly-mark"' + (nSel ? "" : " disabled") + ">" + ic("check") + "Mark selected as paid" + (nSel ? " (" + nSel + ")" : "") + "</button>") + "</div>" +
-      '<div class="bd flush"><div class="tbl-wrap" style="max-height:60vh"><table class="t"><thead><tr><th>' + (S.ro ? "" : '<input type="checkbox" id="dly-all" title="Select all pending">') + '</th><th>Report date</th><th>Station</th><th>LandBank file</th><th class="n">Txns</th><th class="n">Liters</th><th class="n">LandBank amount</th><th class="n">Matched to Site</th><th>Reconciliation</th><th>Status</th><th>Received</th><th></th></tr></thead><tbody>' +
-      (list.length ? list.map((d) => "<tr" + (S.dly.sel.has(d.key) ? ' class="sel"' : "") + "><td>" + (canTick(d) ? '<input type="checkbox" data-dly="' + esc(d.key) + '"' + (S.dly.sel.has(d.key) ? " checked" : "") + ">" : d.status === "Paid" ? ic("check").replace("<svg", '<svg style="width:15px;height:15px;color:#0ca30c"') : "") + '</td><td style="white-space:nowrap"><b>' + esc(d.date) + '</b></td><td class="small">' + esc(d.station) + '</td><td class="small">' + esc(d.files.join(", ")) + '</td><td class="n">' + N(d.count) + '</td><td class="n">' + L(d.liters) + '</td><td class="n">' + P(d.amount) + '</td><td class="n">' + N(d.matched) + " of " + N(d.count) + "</td><td>" + reconChip(d) + "</td><td>" +
-        (d.status === "Paid" ? '<span class="chip good">' + ic("check") + "Paid</span>" : '<span class="chip neutral">Pending</span>') + '</td><td class="small">' +
-        (d.status === "Paid" ? esc(d.lastDate) + '<div class="xs muted">' + esc(d.refs) + " · " + P(d.paid) + (Math.abs(d.diff) > 0.004 ? ' <span class="neg">(' + (d.diff > 0 ? "+" : "") + P(d.diff) + ")</span>" : "") + "<br>" + esc(who(d.receipts[0])) + "</div>" : "—") + "</td><td>" +
-        (S.ro ? "" : d.status === "Paid" ? '<button class="btn sm" data-dlyundo="' + esc(d.key) + '">Undo</button>' : '<button class="btn sm" data-dlyone="' + esc(d.key) + '">Mark paid</button>') + "</td></tr>").join("") :
-        '<tr><td colspan="12"><div class="empty small">' + (all.length ? "No reports with this status." : "No LandBank reports uploaded for this scope.") + "</div></td></tr>") +
-      (list.length > 1 ? '</tbody><tfoot><tr><td></td><td colspan="3">' + list.length + ' report(s)</td><td class="n">' + N(list.reduce((a, d) => a + d.count, 0)) + '</td><td class="n">' + L(R.r3(list.reduce((a, d) => a + d.liters, 0))) + '</td><td class="n">' + P(R.r2(list.reduce((a, d) => a + d.amount, 0))) + '</td><td colspan="5"></td></tr></tfoot>' : "</tbody>") +
-      '</table></div></div><div class="bd small muted" style="border-top:1px solid #e3e3de">Tick a daily report once it has been reviewed and its payment is received. Marking it paid records a reimbursement (bank credit) for that day, so the outstanding receivable updates. Several days paid by one bank credit can be marked together with the same reference.</div></div>';
+    h += '<div class="card gap16"><div class="hd" style="flex-wrap:wrap"><h3>Daily LandBank reports</h3><span class="sub">' + paidDays.length + " of " + all.length + ' reimbursed</span><span class="grow"></span>' +
+      '<select id="dly-st"><option value=""' + (!S.dly.status ? " selected" : "") + '>All reports</option><option value="Unpaid"' + (S.dly.status === "Unpaid" ? " selected" : "") + '>Unpaid only</option><option value="Reimbursed"' + (S.dly.status === "Reimbursed" ? " selected" : "") + ">Reimbursed only</option></select>" +
+      (S.ro ? "" : '<button class="btn" id="dly-mark"' + (nSel ? "" : " disabled") + ">Record bank payment for selected" + (nSel ? " (" + nSel + ")" : "") + "</button>") + "</div>" +
+      '<div class="bd flush"><div class="tbl-wrap" style="max-height:60vh"><table class="t"><thead><tr><th>' + (S.ro ? "" : '<input type="checkbox" id="dly-all" title="Select all unpaid">') + '</th><th>Report date</th><th>Station</th><th>LandBank file</th><th class="n">Txns</th><th class="n">Liters</th><th class="n">LandBank amount</th><th>Reimbursement</th><th>Paid by</th><th>Site vs LandBank</th><th></th></tr></thead><tbody>' +
+      (list.length ? list.map((d) => "<tr" + (S.dly.sel.has(d.key) ? ' class="sel"' : "") + "><td>" + (d.status === "Unpaid" && !S.ro ? '<input type="checkbox" data-dly="' + esc(d.key) + '"' + (S.dly.sel.has(d.key) ? " checked" : "") + ">" : d.status === "Reimbursed" ? ic("check").replace("<svg", '<svg style="width:15px;height:15px;color:#0ca30c"') : "") +
+        '</td><td style="white-space:nowrap"><b>' + esc(d.date) + '</b></td><td class="small">' + esc(d.station) + '</td><td class="small">' + esc(d.files.join(", ")) + '</td><td class="n">' + N(d.count) + '</td><td class="n">' + L(d.liters) + '</td><td class="n">' + P(d.amount) + "</td><td>" +
+        (d.status === "Reimbursed" ? '<span class="chip good">' + ic("check") + "Reimbursed</span>" : '<span class="chip critical">Unpaid</span>') + '</td><td class="small">' + (d.status === "Reimbursed" ? esc(d.payDate) + '<div class="xs muted">' + esc(d.refs) + "</div>" : "—") + "</td><td>" + reconChip(d) + "</td><td>" +
+        (S.ro || d.status === "Reimbursed" ? "" : '<button class="btn sm" data-dlyone="' + esc(d.key) + '">Record payment</button>') + "</td></tr>").join("")
+        : '<tr><td colspan="11"><div class="empty small">' + (all.length ? "No reports with this status." : "No LandBank reports uploaded for this scope.") + "</div></td></tr>") +
+      (list.length > 1 ? '</tbody><tfoot><tr><td></td><td colspan="3">' + list.length + ' report(s)</td><td class="n">' + N(list.reduce((a, d) => a + d.count, 0)) + '</td><td class="n">' + L(R.r3(list.reduce((a, d) => a + d.liters, 0))) + '</td><td class="n">' + P(R.r2(list.reduce((a, d) => a + d.amount, 0))) + '</td><td colspan="4"></td></tr></tfoot>' : "</tbody>") +
+      '</table></div></div><div class="bd small muted" style="border-top:1px solid #e3e3de"><b>Reimbursement</b> shows whether a bank payment covers the day. <b>Site vs LandBank</b> shows reconciliation discrepancies — the two are tracked separately.</div></div>';
+    S._gapRuns = gaps.runs;
+    return h;
   }
   function bindDaily(el) {
     const st = $("#dly-st", el); if (st) st.addEventListener("change", () => { S.dly.status = st.value; S.dly.sel.clear(); render(); });
     $$("[data-dly]", el).forEach((cb) => cb.addEventListener("change", () => { if (cb.checked) S.dly.sel.add(cb.dataset.dly); else S.dly.sel.delete(cb.dataset.dly); render(); }));
     const all = $("#dly-all", el);
     if (all) { const keys = $$("[data-dly]", el).map((c) => c.dataset.dly); all.checked = keys.length > 0 && keys.every((k) => S.dly.sel.has(k)); all.addEventListener("change", () => { keys.forEach((k) => all.checked ? S.dly.sel.add(k) : S.dly.sel.delete(k)); render(); }); }
-    const mk = $("#dly-mark", el); if (mk) mk.addEventListener("click", () => { const rows = dailyLbRows().filter((d) => S.dly.sel.has(d.key) && d.status === "Pending"); if (rows.length) markDaysPaid(rows); });
-    $$("[data-dlyone]", el).forEach((b) => b.addEventListener("click", () => { const d = dailyLbRows().find((x) => x.key === b.dataset.dlyone); if (d) markDaysPaid([d]); }));
-    $$("[data-dlyundo]", el).forEach((b) => b.addEventListener("click", () => { const d = dailyLbRows().find((x) => x.key === b.dataset.dlyundo); if (d) undoDayPaid(d); }));
+    const mk = $("#dly-mark", el); if (mk) mk.addEventListener("click", () => { const rows = dailyLbRows(true).filter((d) => S.dly.sel.has(d.key) && d.status === "Unpaid"); if (rows.length) paymentDialog(rows); });
+    const pn = $("#pay-new", el); if (pn) pn.addEventListener("click", () => paymentDialog(null));
+    $$("[data-dlyone]", el).forEach((b) => b.addEventListener("click", () => { const d = dailyLbRows(true).find((x) => x.key === b.dataset.dlyone); if (d) paymentDialog([d]); }));
+    $$("[data-payrun]", el).forEach((b) => b.addEventListener("click", () => { const r = (S._gapRuns || [])[+b.dataset.payrun]; if (r) paymentDialog(r.days); }));
+    $$("[data-payundo]", el).forEach((b) => b.addEventListener("click", () => undoPayment(b.dataset.payundo)));
+    $$("[data-paydet]", el).forEach((b) => b.addEventListener("click", () => paymentDetails(b.dataset.paydet)));
     $$("[data-dayrecon]", el).forEach((c) => c.addEventListener("click", () => { const [stn, date] = c.dataset.dayrecon.split("|"); S.filter.station = stn; S.filter.period = date.slice(0, 7); Object.assign(S.rc, { q: "", status: "", from: date, to: date, page: 0 }); go("recon"); }));
   }
-  function markDaysPaid(days) {
-    if (!canChange()) return;
-    const total = R.r2(days.reduce((a, d) => a + d.amount, 0));
-    const withOpen = days.filter((d) => d.open > 0), withTiming = days.filter((d) => !d.open && d.timing > 0);
-    const single = days.length === 1;
-    const m = modal('<div class="mh"><h3>Mark ' + (single ? "LandBank report " + esc(days[0].date) : days.length + " LandBank reports") + ' as paid</h3></div><div class="mb">' +
-      '<table class="t" style="margin-bottom:12px"><thead><tr><th>Report date</th><th>Station</th><th class="n">Txns</th><th class="n">LandBank amount</th><th>Reconciliation</th></tr></thead><tbody>' +
-      days.map((d) => "<tr><td>" + esc(d.date) + "</td><td>" + esc(d.station) + '</td><td class="n">' + N(d.count) + '</td><td class="n">' + P(d.amount) + "</td><td>" + esc(d.recon) + "</td></tr>").join("") +
-      (days.length > 1 ? '</tbody><tfoot><tr><td colspan="3">Total</td><td class="n">' + P(total) + "</td><td></td></tr></tfoot>" : "</tbody>") + "</table>" +
-      (withOpen.length ? '<div class="banner err">' + withOpen.length + " report(s) still have open discrepancies (" + esc(withOpen.map((d) => d.date + ": " + d.recon).join("; ")) + "). Explain below why they can be marked as paid, or resolve them first in Discrepancy Monitoring.</div>" : "") +
-      (withTiming.length ? '<div class="banner info">' + withTiming.length + " report(s) have cut-off items only; these usually clear when the adjacent day\'s Site Report is uploaded.</div>" : "") +
-      '<div class="form"><label>Date received in bank</label><input type="date" id="dp-date" value="' + new Date().toISOString().slice(0, 10) + '">' +
-      "<label>Bank / LandBank credit reference</label><input type=\"text\" id=\"dp-ref\">" +
-      (single ? '<label>Amount received (₱)</label><input type="number" step="0.01" min="0" id="dp-amt" value="' + days[0].amount.toFixed(2) + '">' : "<label>Amount received (₱)</label><div><b>" + P(total) + '</b><div class="xs muted">Each report is recorded at its LandBank amount. If the bank credit differs, mark the days one at a time.</div></div>') +
-      '<label>Remarks</label><input type="text" id="dp-rem"></div>' +
-      (withOpen.length ? '<div style="margin-top:10px"><label class="small muted">Reason for marking paid with open discrepancies (required)</label><textarea id="dp-why"></textarea></div>' : "") +
-      '<label class="row small" style="margin-top:12px"><input type="checkbox" id="dp-ok"> I have reviewed ' + (single ? "this LandBank report" : "these LandBank reports") + " and confirm the payment was received.</label>" +
-      '</div><div class="mf"><button class="btn" data-close>Cancel</button><button class="btn primary" id="dp-save">' + ic("check") + "Mark as paid</button></div>");
-    $("#dp-save", m.el).addEventListener("click", async () => {
-      const date = $("#dp-date", m.el).value, ref = $("#dp-ref", m.el).value.trim(), rem = $("#dp-rem", m.el).value.trim();
-      const why = withOpen.length ? $("#dp-why", m.el).value.trim() : "";
-      if (!date) return toast("Enter the date received.", "err");
-      if (!ref) return toast("Enter the bank / credit reference.", "err");
-      if (withOpen.length && !why) return toast("Explain why reports with open discrepancies can be marked paid.", "err");
-      if (!$("#dp-ok", m.el).checked) return toast("Please tick the review confirmation.", "err");
-      const dup = S.receipts.find((r) => !r.void && R.nh(r.ref) === R.nh(ref));
-      if (dup) return toast("Reference " + ref + " was already recorded on " + dup.dateReceived + " (" + dup.station + " " + (dup.lbDate || dup.period) + "). Duplicate recognition blocked.", "err");
-      let amounts = days.map((d) => d.amount);
-      if (single) { const a = R.r2(+$("#dp-amt", m.el).value); if (!(a > 0)) return toast("Enter the amount received.", "err"); amounts = [a]; }
-      const batch = uid();
-      for (let i = 0; i < days.length; i++) {
-        const d = days[i], id = uid();
-        const doc = clean(Object.assign({ station: d.station, period: d.period, amount: amounts[i], ref, remarks: rem, dateReceived: date, lbKey: d.key, lbDate: d.date, batch, override: why }, stamp()));
-        S.receipts.push(Object.assign({ id }, doc));
-        if (!(await put("receipts", id, doc))) { m.close(); render(); return; }
+  function suggestRun(days, amount) {
+    const target = Math.round(amount * 100);
+    let best = null;
+    for (let i = 0; i < days.length; i++) {
+      let s = 0;
+      for (let j = i; j < days.length; j++) {
+        s += Math.round(days[j].amount * 100);
+        const d = Math.abs(s - target);
+        if (!best || d < best.d || (d === best.d && j - i < best.j - best.i)) best = { i, j, d };
+        if (s > target + 100000) break;
       }
-      await audit("MARK_PAID", "Marked " + days.length + " LandBank report(s) as paid: " + days.map((d, i) => d.station + " " + d.date + " " + P(amounts[i])).join("; ") + ". Received " + date + ", ref " + ref + (why ? ". Open discrepancies — reason: " + why : "") + (rem ? ". " + rem : ""), batch);
-      S.dly.sel.clear(); m.close(); render(); toast(days.length + " LandBank report(s) marked as paid.", "ok");
+    }
+    return best;
+  }
+  function paymentDialog(pre) {
+    if (!canChange()) return;
+    const unpaidAll = dailyLbRows(true).filter((d) => d.status === "Unpaid");
+    const stations = Array.from(new Set(unpaidAll.map((d) => d.station))).sort();
+    if (!stations.length) { toast("All daily LandBank reports are already covered by a bank payment.", "ok"); return; }
+    let station = pre && pre[0] ? pre[0].station : (S.filter.station && stations.includes(S.filter.station) ? S.filter.station : stations[0]);
+    const sel = new Set(pre ? pre.map((d) => d.key) : []);
+    const preTotal = pre ? R.r2(pre.reduce((a, d) => a + d.amount, 0)) : "";
+    const m = modal('<div class="mh"><h3>Record bank payment</h3><span class="sub small muted">match one bank credit to the daily LandBank reports it covers</span></div><div class="mb">' +
+      '<div class="form"><label>Station</label><select id="py-st">' + stations.map((s) => '<option value="' + esc(s) + '"' + (s === station ? " selected" : "") + ">" + esc(stationLabel(s)) + "</option>").join("") + "</select>" +
+      '<label>Date received in bank</label><input type="date" id="py-date" value="' + new Date().toISOString().slice(0, 10) + '">' +
+      '<label>Bank reference</label><input type="text" id="py-ref" placeholder="as shown on the bank statement">' +
+      '<label>Bank amount (₱)</label><div class="row"><input type="number" step="0.01" min="0" id="py-amt" value="' + (preTotal === "" ? "" : preTotal.toFixed(2)) + '" style="width:180px"><button class="btn sm" id="py-sug" type="button">Find matching days</button></div>' +
+      '<label>Remarks</label><input type="text" id="py-rem"></div>' +
+      '<div class="small" style="font-weight:600;margin:14px 0 6px">Unpaid daily LandBank reports — tick the days this payment covers</div><div id="py-list" class="tbl-wrap" style="max-height:38vh"></div>' +
+      '<div id="py-sum" class="banner info" style="margin-top:12px"></div><div id="py-diff"></div>' +
+      '<label class="row small" style="margin-top:10px"><input type="checkbox" id="py-ok"> The bank date, reference and amount match the bank statement.</label>' +
+      '</div><div class="mf"><button class="btn" data-close>Cancel</button><button class="btn primary" id="py-save">' + ic("check") + "Save payment</button></div>", { wide: true });
+    const days = () => unpaidAll.filter((d) => d.station === station).sort((a, b) => a.date.localeCompare(b.date));
+    const drawList = () => {
+      $("#py-list", m.el).innerHTML = '<table class="t"><thead><tr><th></th><th>Report date</th><th class="n">Txns</th><th class="n">LandBank amount</th><th>Site vs LandBank</th></tr></thead><tbody>' +
+        days().map((d) => '<tr><td><input type="checkbox" data-pyd="' + esc(d.key) + '"' + (sel.has(d.key) ? " checked" : "") + '></td><td style="white-space:nowrap">' + esc(d.date) + '</td><td class="n">' + N(d.count) + '</td><td class="n">' + P(d.amount) + '</td><td class="small muted">' + esc(d.recon) + "</td></tr>").join("") + "</tbody></table>";
+      $$("[data-pyd]", m.el).forEach((cb) => cb.addEventListener("change", () => { if (cb.checked) sel.add(cb.dataset.pyd); else sel.delete(cb.dataset.pyd); drawSum(); }));
+      drawSum();
+    };
+    const drawSum = () => {
+      const chosen = days().filter((d) => sel.has(d.key));
+      const tot = R.r2(chosen.reduce((a, d) => a + d.amount, 0));
+      const amt = $("#py-amt", m.el).value === "" ? null : R.r2(+$("#py-amt", m.el).value);
+      const diff = amt == null ? null : R.r2(amt - tot);
+      const ds = chosen.map((d) => d.date).sort();
+      $("#py-sum", m.el).innerHTML = "<b>" + chosen.length + " report(s)</b>" + (ds.length ? " · covers <b>" + esc(rangeTxt(ds[0], ds[ds.length - 1])) + "</b>" : "") + " · daily reports total <b>" + P(tot) + "</b>" + (amt != null ? " · bank amount <b>" + P(amt) + "</b> · difference <b" + (Math.abs(diff) > 0.004 ? ' class="neg"' : "") + ">" + P(diff) + "</b>" + (Math.abs(diff) <= 0.004 && chosen.length ? " ✓ exact match" : "") : "");
+      const dv = $("#py-diff", m.el);
+      const need = diff != null && chosen.length && Math.abs(diff) > 0.004;
+      if (need && !$("#py-note", m.el)) dv.innerHTML = '<div style="margin-top:8px"><label class="small muted">The bank amount differs from the selected reports. Explain the difference (required), e.g. bank charges, a day paid separately, an adjustment by LandBank.</label><textarea id="py-note"></textarea></div>';
+      if (!need) dv.innerHTML = "";
+    };
+    $("#py-st", m.el).addEventListener("change", (e) => { station = e.target.value; sel.clear(); drawList(); });
+    $("#py-amt", m.el).addEventListener("input", drawSum);
+    $("#py-sug", m.el).addEventListener("click", () => {
+      const amt = +$("#py-amt", m.el).value;
+      if (!(amt > 0)) return toast("Enter the bank amount first.", "err");
+      const ds = days(), b = suggestRun(ds, amt);
+      if (!b) return;
+      sel.clear(); for (let k = b.i; k <= b.j; k++) sel.add(ds[k].key);
+      drawList();
+      toast(b.d === 0 ? "Exact match: " + (b.j - b.i + 1) + " consecutive report(s), " + rangeTxt(ds[b.i].date, ds[b.j].date) + "." : "No exact match. Closest run: " + rangeTxt(ds[b.i].date, ds[b.j].date) + ", difference " + P((Math.round(amt * 100) - ds.slice(b.i, b.j + 1).reduce((a, d) => a + Math.round(d.amount * 100), 0)) / 100) + ". Adjust the ticks if needed.", b.d === 0 ? "ok" : "");
+    });
+    drawList();
+    $("#py-save", m.el).addEventListener("click", async () => {
+      const chosen = days().filter((d) => sel.has(d.key));
+      const date = $("#py-date", m.el).value, ref = $("#py-ref", m.el).value.trim(), rem = $("#py-rem", m.el).value.trim();
+      const amt = R.r2(+$("#py-amt", m.el).value);
+      if (!date) return toast("Enter the date received.", "err");
+      if (!ref) return toast("Enter the bank reference.", "err");
+      if (!(amt > 0)) return toast("Enter the bank amount.", "err");
+      if (!chosen.length) return toast("Tick the daily LandBank reports this payment covers.", "err");
+      const tot = R.r2(chosen.reduce((a, d) => a + d.amount, 0)), diff = R.r2(amt - tot);
+      const note = $("#py-note", m.el) ? $("#py-note", m.el).value.trim() : "";
+      if (Math.abs(diff) > 0.004 && !note) return toast("Explain the difference between the bank amount and the selected reports.", "err");
+      if (!$("#py-ok", m.el).checked) return toast("Please confirm the payment matches the bank statement.", "err");
+      const dup = S.receipts.find((r) => !r.void && R.nh(r.ref) === R.nh(ref));
+      if (dup) return toast("Bank reference " + ref + " was already recorded on " + dup.dateReceived + ". Duplicate recognition blocked.", "err");
+      const batch = uid();
+      const base = (extra) => clean(Object.assign({ station, ref, remarks: rem, dateReceived: date, batch, override: note }, extra, stamp()));
+      for (const d of chosen) {
+        const id = uid(), doc = base({ period: d.period, amount: d.amount, lbKey: d.key, lbDate: d.date });
+        S.receipts.push(Object.assign({ id }, doc)); if (!(await put("receipts", id, doc))) { m.close(); render(); return; }
+      }
+      if (Math.abs(diff) > 0.004) {
+        const last = chosen[chosen.length - 1], id = uid(), doc = base({ period: last.period, amount: diff, diffOf: batch, remarks: "Difference vs daily LandBank reports: " + note + (rem ? " · " + rem : "") });
+        S.receipts.push(Object.assign({ id }, doc)); await put("receipts", id, doc);
+      }
+      const ds = chosen.map((d) => d.date).sort();
+      await audit("BANK_PAYMENT", "Bank payment " + P(amt) + " ref " + ref + " received " + date + " for " + station + " matched to " + chosen.length + " daily LandBank report(s) " + rangeTxt(ds[0], ds[ds.length - 1]) + " (reports total " + P(tot) + (Math.abs(diff) > 0.004 ? ", difference " + P(diff) + ": " + note : ", exact match") + ")" + (rem ? ". " + rem : ""), batch);
+      S.dly.sel.clear(); m.close(); render(); toast("Bank payment saved — " + chosen.length + " daily report(s) marked reimbursed.", "ok");
     });
   }
-  async function undoDayPaid(d) {
-    const ok = await confirmBox("Undo paid status for " + d.date + "?", "<p>The reimbursement recorded for this LandBank report (" + P(d.paid) + ", ref " + esc(d.refs) + ") will be voided and the report returns to <b>Pending</b>. The entry stays on record, struck through.</p>", "Undo paid", { danger: true, reason: "Reason" });
+  function paymentDetails(batch) {
+    const rs = S.receipts.filter((r) => r.batch === batch).sort((a, b) => (a.lbDate || "9").localeCompare(b.lbDate || "9"));
+    if (!rs.length) return;
+    modal('<div class="mh"><h3>Bank payment ' + esc(rs[0].ref) + "</h3></div><div class=\"mb\"><p class=\"small\">Received " + esc(rs[0].dateReceived) + " · " + esc(rs[0].station) + '</p><table class="t"><thead><tr><th>Daily LandBank report</th><th class="n">Amount</th><th>Note</th></tr></thead><tbody>' +
+      rs.map((r) => '<tr style="' + (r.void ? "opacity:.5;text-decoration:line-through" : "") + '"><td>' + (r.lbDate ? esc(r.lbDate) : "<i>Difference</i>") + '</td><td class="n">' + P(+r.amount) + '</td><td class="small muted">' + esc(r.diffOf ? r.remarks : "") + "</td></tr>").join("") +
+      '</tbody><tfoot><tr><td>Bank amount</td><td class="n">' + P(R.r2(rs.filter((r) => !r.void).reduce((a, r) => a + (+r.amount || 0), 0))) + '</td><td></td></tr></tfoot></table></div><div class="mf"><button class="btn" data-close>Close</button></div>');
+  }
+  async function undoPayment(batch) {
+    const rs = S.receipts.filter((r) => r.batch === batch && !r.void);
+    if (!rs.length) return;
+    const total = R.r2(rs.reduce((a, r) => a + (+r.amount || 0), 0));
+    const ok = await confirmBox("Undo bank payment " + rs[0].ref + "?", "<p>The payment of " + P(total) + " will be voided and its " + rs.filter((r) => r.lbKey).length + " daily LandBank report(s) return to <b>Unpaid</b>. The entry stays on record, struck through.</p>", "Undo payment", { danger: true, reason: "Reason" });
     if (!ok) return;
-    for (const r of d.receipts) {
+    for (const r of rs) {
       Object.assign(r, { void: true, voidReason: ok.reason, voidTs: nowIso(), voidBy: S.me.id || S.me.name || "" });
       const save = Object.assign({}, r); delete save.id; delete save._k;
       await put("receipts", r.id, clean(save));
     }
-    await audit("UNMARK_PAID", "Undid paid status for LandBank report " + d.station + " " + d.date + " (" + P(d.paid) + ", ref " + d.refs + "). Reason: " + ok.reason, d.key);
+    await audit("UNDO_BANK_PAYMENT", "Undid bank payment " + rs[0].ref + " (" + P(total) + ", " + rs[0].station + "). Reason: " + ok.reason, batch);
     render();
   }
   function recvChip(s) { const c = /Fully/.test(s) ? "good" : /Over/.test(s) ? "critical" : /Partially|Approved/.test(s) ? "warn" : "neutral"; return '<span class="chip ' + c + '">' + esc(s) + "</span>"; }
@@ -1213,7 +1354,7 @@
       { id: "unlb", title: "Unmatched LandBank Transactions", desc: "In the LandBank report but not matched to the Site Report.", sheets: [itemsSheet("Unmatched LandBank", items.filter((i) => i.lb && (!i.site || i.flags.suggestion) && i.status !== ST.DUP))] },
       { id: "variance", title: "Amount and Liter Variance Report", desc: "Matched transactions whose subsidy, liters or date differ, plus rounding.", sheets: [itemsSheet("Variances", pairs.filter((i) => [ST.AMOUNT, ST.LITER, ST.DATE, ST.VERIFY].includes(i.status) || i.flags.rounding))] },
       { id: "dups", title: "Duplicate Transactions Report", desc: "Repeated invoices or LandBank references, excluded from receivable.", sheets: [itemsSheet("Duplicates", items.filter((i) => i.status === ST.DUP))] },
-      { id: "receivables", title: "Outstanding DOE Subsidy Receivables", desc: "Reported vs validated vs approved vs reimbursed, per claim period.", sheets: [{ name: "Receivables", cols: RECV_COLS, rows: recv }, { name: "Reimbursements", cols: [{ h: "Date Received", f: (r) => r.dateReceived, w: 12 }, { h: "Station", f: (r) => r.station, w: 10 }, { h: "Period", f: (r) => r.period, w: 9 }, { h: "Amount", f: (r) => +r.amount, t: "p", w: 14 }, { h: "Reference", f: (r) => r.ref, w: 20 }, { h: "Remarks", f: (r) => r.remarks || "", w: 30 }, { h: "Voided", f: (r) => r.void ? "VOID – " + (r.voidReason || "") : "", w: 20 }, { h: "Recorded by", f: (r) => who(r) + " " + fmtTs(r.ts), w: 28 }], rows: S.receipts.filter((r) => inScope(r.station, r.period)) }, { name: "Daily LandBank reports", cols: [{ h: "Report Date", f: (d) => d.date, w: 12 }, { h: "Station", f: (d) => d.station, w: 10 }, { h: "LandBank File", f: (d) => d.files.join(", "), w: 28 }, { h: "Transactions", f: (d) => d.count, t: "n", w: 10 }, { h: "Liters", f: (d) => d.liters, t: "l", w: 12 }, { h: "LandBank Amount", f: (d) => d.amount, t: "p", w: 14 }, { h: "Matched to Site", f: (d) => d.matched, t: "n", w: 10 }, { h: "Reconciliation", f: (d) => d.recon, w: 20 }, { h: "Status", f: (d) => d.status, w: 10 }, { h: "Date Received", f: (d) => d.lastDate, w: 12 }, { h: "Reference", f: (d) => d.refs, w: 20 }, { h: "Amount Received", f: (d) => d.status === "Paid" ? d.paid : null, t: "p", w: 14 }, { h: "Difference", f: (d) => d.status === "Paid" ? d.diff : null, t: "p", w: 12 }], rows: dailyLbRows() }] },
+      { id: "receivables", title: "Outstanding DOE Subsidy Receivables", desc: "Reported vs validated vs approved vs reimbursed, per claim period.", sheets: [{ name: "Receivables", cols: RECV_COLS, rows: recv }, { name: "Reimbursements", cols: [{ h: "Date Received", f: (r) => r.dateReceived, w: 12 }, { h: "Station", f: (r) => r.station, w: 10 }, { h: "Period", f: (r) => r.period, w: 9 }, { h: "Amount", f: (r) => +r.amount, t: "p", w: 14 }, { h: "Reference", f: (r) => r.ref, w: 20 }, { h: "Remarks", f: (r) => r.remarks || "", w: 30 }, { h: "Voided", f: (r) => r.void ? "VOID – " + (r.voidReason || "") : "", w: 20 }, { h: "Recorded by", f: (r) => who(r) + " " + fmtTs(r.ts), w: 28 }], rows: S.receipts.filter((r) => inScope(r.station, r.period)) }, { name: "Daily LandBank reports", cols: [{ h: "Report Date", f: (d) => d.date, w: 12 }, { h: "Station", f: (d) => d.station, w: 10 }, { h: "LandBank File", f: (d) => d.files.join(", "), w: 28 }, { h: "Transactions", f: (d) => d.count, t: "n", w: 10 }, { h: "Liters", f: (d) => d.liters, t: "l", w: 12 }, { h: "LandBank Amount", f: (d) => d.amount, t: "p", w: 14 }, { h: "Reimbursement", f: (d) => d.status, w: 12 }, { h: "Date Received", f: (d) => d.payDate, w: 12 }, { h: "Bank Reference", f: (d) => d.refs, w: 20 }, { h: "Site vs LandBank", f: (d) => d.recon, w: 20 }], rows: dailyLbRows() }, { name: "Bank payments", cols: [{ h: "Date Received", f: (p) => p.date, w: 12 }, { h: "Bank Reference", f: (p) => p.ref, w: 20 }, { h: "Station", f: (p) => p.station, w: 10 }, { h: "Period From", f: (p) => p.from, w: 12 }, { h: "Period To", f: (p) => p.to, w: 12 }, { h: "Reports", f: (p) => p.days.length, t: "n", w: 8 }, { h: "Daily Reports Total", f: (p) => p.void ? null : p.daysTotal, t: "p", w: 14 }, { h: "Bank Amount", f: (p) => p.void ? null : p.bank, t: "p", w: 14 }, { h: "Difference", f: (p) => p.void ? null : p.diff, t: "p", w: 12 }, { h: "Difference Note", f: (p) => p.note, w: 30 }, { h: "Status", f: (p) => p.void ? "UNDONE – " + p.voidReason : "Active", w: 16 }], rows: bankPayments() }, { name: "Unpaid periods", cols: [{ h: "Station", f: (r) => r.station, w: 10 }, { h: "From", f: (r) => r.from, w: 12 }, { h: "To", f: (r) => r.to, w: 12 }, { h: "Reports", f: (r) => r.count, t: "n", w: 8 }, { h: "LandBank Amount", f: (r) => r.amount, t: "p", w: 14 }], rows: coverageGaps(dailyLbRows()).runs }, { name: "Missing LandBank reports", cols: [{ h: "Station", f: (r) => r.station, w: 10 }, { h: "From", f: (r) => r.from, w: 12 }, { h: "To", f: (r) => r.to, w: 12 }, { h: "Days", f: (r) => r.count, t: "n", w: 8 }], rows: coverageGaps(dailyLbRows()).missing }] },
       { id: "monthly", title: "Monthly Subsidy Reconciliation Report", desc: "Per station and month: volumes, amounts, matching and receivable status.", sheets: [{ name: "Monthly", cols: MCOLS, rows: monthlyRows }] }
     ];
   }
