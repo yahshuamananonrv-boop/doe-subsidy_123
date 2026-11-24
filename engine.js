@@ -282,13 +282,18 @@
     const side = file.side, issues = [], records = [], excluded = {};
     const get = (row, k) => { const m = map[k]; if (!m) return null; if (m.meta) return file.meta[m.meta]; return row.c[m.col]; };
     const filt = settings.siteFilters || {};
-    const mopF = (filt.mop || []).map(nh).filter(Boolean), refF = (filt.refCode || []).map(nh).filter(Boolean);
+    const fk = (s) => String(s == null ? "" : s).toLowerCase().replace(/[^a-z0-9]/g, "");
+    const mopF = (filt.mop || []).map(fk).filter(Boolean), refF = (filt.refCode || []).map(fk).filter(Boolean);
+    const seen = { mop: {}, ref: {}, pairs: {} };
     const fileStation = side === "lb" ? stationFromFileName(file.name) : null;
     for (const row of file.rows) {
       if (side === "site") {
         const mop = get(row, "mop"), ref = get(row, "refCode");
-        const mopOk = !map.mop || !mopF.length || mopF.includes(nh(mop));
-        const refOk = !map.refCode || !refF.length || refF.includes(nh(ref));
+        const mk = mop == null || mop === "" ? "(blank)" : String(mop), rk = ref == null || ref === "" ? "(blank)" : String(ref);
+        if (map.mop) seen.mop[mk] = (seen.mop[mk] || 0) + 1;
+        if (map.refCode) { seen.ref[rk] = (seen.ref[rk] || 0) + 1; const pk = mk + "\u0001" + rk; seen.pairs[pk] = (seen.pairs[pk] || 0) + 1; }
+        const mopOk = !map.mop || !mopF.length || mopF.includes(fk(mop));
+        const refOk = !map.refCode || !refF.length || refF.includes(fk(ref));
         if (!mopOk || !refOk) { const k = (mop || "(blank)") + (ref && !refOk ? " / " + ref : ""); excluded[k] = (excluded[k] || 0) + 1; continue; }
       }
       const rec = { key: file.id + "#" + row.n, side, fileId: file.id, fileName: file.name, rowNo: row.n };
@@ -322,7 +327,7 @@
       }
       records.push(rec);
     }
-    return { records, issues, excluded };
+    return { records, issues, excluded, seen };
   }
 
   /** coverage interval of a file, in its own clock: [startMs, endMs] */
