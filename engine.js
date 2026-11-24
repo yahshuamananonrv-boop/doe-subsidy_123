@@ -58,7 +58,7 @@
     dateTolDays: 0,           // allowed calendar-day difference before DATE MISMATCH
     autoAcceptL3: false,      // Level 3 (amount+time only) unique matches: auto-accept or suggest
     dateOrder: "MDY",         // for ambiguous 01/02/2026 style dates
-    siteFilters: { mop: ["Other Vouchers"], refCode: ["DOE12"] },
+    siteFilters: { mop: ["Other Vouchers"], refCode: ["DOE12", "DOE10"] },
     stations: []              // [{code, siteNumber, name}]
   };
 
@@ -293,7 +293,7 @@
         if (map.mop) seen.mop[mk] = (seen.mop[mk] || 0) + 1;
         if (map.refCode) { seen.ref[rk] = (seen.ref[rk] || 0) + 1; const pk = mk + "\u0001" + rk; seen.pairs[pk] = (seen.pairs[pk] || 0) + 1; }
         const mopOk = !map.mop || !mopF.length || mopF.includes(fk(mop));
-        const refOk = !map.refCode || !refF.length || refF.includes(fk(ref));
+        const refOk = !map.refCode || !refF.length || refF.includes(fk(ref)) || /^doe\d{1,3}$/.test(fk(ref));
         if (!mopOk || !refOk) { const k = (mop || "(blank)") + (ref && !refOk ? " / " + ref : ""); excluded[k] = (excluded[k] || 0) + 1; continue; }
       }
       const rec = { key: file.id + "#" + row.n, side, fileId: file.id, fileName: file.name, rowNo: row.n };
@@ -318,6 +318,8 @@
       if (side === "site") {
         rec.pos = get(row, "pos"); rec.txnType = get(row, "txnType"); rec.mop = get(row, "mop"); rec.refCode = get(row, "refCode");
         rec.price = num("price"); rec.beneficiary = get(row, "beneficiary");
+        const cr = fk(rec.refCode).match(/^doe(\d{1,3})$/);
+        if (cr && +cr[1] > 0) { rec.rate = +cr[1]; rec.rateSource = String(rec.refCode); }
       } else {
         rec.lbRef = isBlank(get(row, "lbRef")) ? "" : String(get(row, "lbRef")).trim();
         rec.amountPaid = num("amountPaid"); rec.remaining = num("remaining"); rec.plate = get(row, "plate");
@@ -375,6 +377,10 @@
     const items = [];
     const used = new Set();
     const offsets = {};
+    // rate per liter from the voucher code (DOE10 = 10, DOE12 = 12); LandBank rows take the rate of the same station-day
+    const dayRate = new Map();
+    for (const r of siteAll) if (r.rate) dayRate.set(r.station + "|" + r.date, r.rate);
+    for (const l of lbAll) if (!l.rate) { const dr = dayRate.get(l.station + "|" + l.date); if (dr) l.rate = dr; }
 
     const stations = Array.from(new Set(siteAll.map((r) => r.station).concat(lbAll.map((r) => r.station)))).sort();
     const offFor = (st) => (offsets[st] ? offsets[st].used : settings.offsetMin);
@@ -395,7 +401,7 @@
 
     function evaluatePair(it) {
       const s = it.site, l = it.lb, off = offFor(s.station) * 60000;
-      const rate = rateFor(settings, s.date);
+      const rate = s.rate || rateFor(settings, s.date);
       const dC = cents(s.subsidy) - cents(l.subsidy);
       it.variance = dC / 100;
       const siteL = s.liters != null ? s.liters : s.subsidy / rate;
@@ -418,8 +424,9 @@
       if (s.txnType && !/^sale$/i.test(String(s.txnType).trim())) { sts.push(STATUS.VERIFY); it.remarks.push("Site transaction type is '" + s.txnType + "' (not Sale)."); }
       if (l.status && /(fail|revers|cancel|void|reject|declin)/i.test(String(l.status))) { sts.push(STATUS.VERIFY); it.remarks.push("LandBank status is '" + l.status + "'."); }
       if (l.liters != null) {
-        const exp = r2(l.liters * rateFor(settings, l.date));
-        if (Math.abs(cents(exp) - cents(l.subsidy)) > tolC) it.remarks.push("LandBank discount ₱" + l.subsidy.toFixed(2) + " ≠ " + l.liters + " L × ₱" + rateFor(settings, l.date) + " (₱" + exp.toFixed(2) + ").");
+        const lRate = s.rate || l.rate || rateFor(settings, l.date);
+        const exp = r2(l.liters * lRate);
+        if (Math.abs(cents(exp) - cents(l.subsidy)) > tolC) it.remarks.push("LandBank discount ₱" + l.subsidy.toFixed(2) + " ≠ " + l.liters + " L × ₱" + lRate + " (₱" + exp.toFixed(2) + ").");
       }
       if (it.level === "L2") { it.flags.invoiceMismatch = true; it.remarks.unshift("Invoice no. differs — Site " + (s.invoice || "(blank)") + " vs LandBank " + (l.invoice || "(blank)") + "; matched on subsidy, pump amount and time (likely invoice keying error)."); }
       if (it.level === "L3") it.remarks.unshift("Matched on subsidy, pump amount and time only (Level 3).");
@@ -525,7 +532,7 @@
       const lbCov = cov.lb[st] || [], siteCov = cov.site[st] || [];
       for (const s of S2) {
         if (used.has(s.key)) continue;
-        const it = { id: s.key, site: s, lb: null, station: st, remarks: [], flags: {}, validated: 0, siteLiters: s.liters != null ? s.liters : r3(s.subsidy / rateFor(settings, s.date)), siteLitersDerived: s.liters == null };
+        const it = { id: s.key, site: s, lb: null, station: st, remarks: [], flags: {}, validated: 0, siteLiters: s.liters != null ? s.liters : r3(s.subsidy / (s.rate || rateFor(settings, s.date))), siteLitersDerived: s.liters == null };
         const cands = candOf.get(s.key).filter((o) => !used.has(o.l.key));
         const sug = suggestions.get(s.key);
         if (sug) {
@@ -600,7 +607,7 @@
     for (const i of items) { const b = byStatus[i.status]; b.count++; b.site += i.siteSubsidy || 0; b.lb += i.lbSubsidy || 0; }
     for (const s of STATUS_ORDER) { byStatus[s].site = r2(byStatus[s].site); byStatus[s].lb = r2(byStatus[s].lb); }
     const pairs = items.filter((i) => i.site && i.lb && !i.flags.suggestion);
-    const siteLitersAll = siteRecs.map((r) => r.liters != null ? r.liters : r3(r.subsidy / rate(r.date)));
+    const siteLitersAll = siteRecs.map((r) => r.liters != null ? r.liters : r3(r.subsidy / (r.rate || rate(r.date))));
     const out = {
       siteCount: siteRecs.length, lbCount: lbRecs.length,
       siteLiters: r3(siteLitersAll.reduce((a, b) => a + b, 0)),
@@ -611,8 +618,8 @@
       lbSubsidy: sum(lbRecs, (r) => r.subsidy),
       siteSale: sum(siteRecs, (r) => r.sale),
       lbSale: sum(lbRecs, (r) => r.sale),
-      siteExpected: sum(siteRecs, (r) => r.liters != null ? r2(r.liters * rate(r.date)) : r.subsidy),
-      lbExpected: sum(lbRecs, (r) => r.liters != null ? r2(r.liters * rate(r.date)) : null),
+      siteExpected: sum(siteRecs, (r) => r.liters != null ? r2(r.liters * (r.rate || rate(r.date))) : r.subsidy),
+      lbExpected: sum(lbRecs, (r) => r.liters != null ? r2(r.liters * (r.rate || rate(r.date))) : null),
       lbReimbursed: sum(lbRecs, (r) => r.reimbursement),
       lbHasReimb: lbRecs.some((r) => r.reimbursement != null),
       matchedCount: pairs.length,
