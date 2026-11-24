@@ -191,7 +191,7 @@
       const n = R.normalizeFile(f, map, settings);
       const c = R.fileCoverage(f, n.records);
       const sts = Array.from(new Set(n.records.map((r) => r.station)));
-      f._norm = { count: n.records.length, issues: n.issues, excluded: n.excluded, stations: sts, cov: c, subsidy: R.r2(n.records.reduce((a, r) => a + r.subsidy, 0)) };
+      f._norm = { seen: n.seen, count: n.records.length, issues: n.issues, excluded: n.excluded, stations: sts, cov: c, subsidy: R.r2(n.records.reduce((a, r) => a + r.subsidy, 0)) };
       (f.side === "site" ? site : lb).push(...n.records);
       if (c) for (const s of sts) (cov[f.side][s] = cov[f.side][s] || []).push(c);
     }
@@ -411,9 +411,11 @@
       '<div class="grid g2 gap16">' +
       ["site", "lb"].map((side) => '<div class="drop" data-side="' + side + '" tabindex="0" role="button">' + ic("cloud").replace("<svg", '<svg class="ic"') + "<h3>" + (side === "site" ? "DOE Subsidy Site Report" : "LandBank Report") + "</h3><p>Drag & drop or click · Excel (.xlsx/.xls) or CSV · several days at once" + (side === "lb" ? "<br>Password-protected files are decrypted in your browser" : "") + '</p><input type="file" multiple accept=".xlsx,.xls,.csv,.xlsm" class="hidden"></div>').join("") +
       "</div>" +
+      zeroBanner() +
       (S.staged.length ? stagedHtml() : "") +
       '<div class="card gap16"><div class="hd"><h3>Uploaded reports</h3><span class="sub">' + S.files.length + ' files · originals are kept unchanged</span><span class="grow"></span><button class="btn sm" id="run-btn"' + (S.files.length ? "" : " disabled") + ">Run reconciliation</button></div><div class=\"bd flush\" id=\"files-tbl\">" + filesTable() + '</div><div id="run-progress" class="bd hidden"></div></div>' +
       '<div class="card"><div class="hd"><h3>Sample data</h3><span class="sub">fictional DEMO STATION · 2 business days · every discrepancy type</span></div><div class="bd row"><button class="btn" id="demo-btn">Load sample data (demo mode)</button><button class="btn" id="sample-dl">' + ic("dl") + 'Download sample files (.zip)</button><span class="small muted">Demo mode runs in memory and does not touch your saved data.</span></div></div>';
+    $$("[data-fixmap]", el).forEach((b) => b.addEventListener("click", () => { S.mapSel = b.dataset.fixmap; go("mapping"); }));
     $$(".drop", el).forEach((d) => {
       const inp = $("input", d);
       d.addEventListener("click", () => { if (canChange()) inp.click(); });
@@ -428,12 +430,18 @@
     $("#run-btn", el).addEventListener("click", () => runWithProgress());
     bindStaged(el); bindFilesTable(el);
   }
+  const fkey = (s) => String(s == null ? "" : s).toLowerCase().replace(/[^a-z0-9]/g, "");
+  function zeroBanner() {
+    const zero = S.files.filter((f) => f.side === "site" && f._norm && f._norm.count === 0);
+    if (!zero.length) return "";
+    return '<div class="banner err fx"><span><b>' + zero.length + " Site Report file(s) have 0 DOE subsidy rows:</b> " + esc(zero.map((f) => f.name).join(", ")) + ". None of their rows match the DOE filter (MOP Name: " + esc((S.settings.siteFilters.mop || []).join(", ") || "any") + "; Reference Code: " + esc((S.settings.siteFilters.refCode || []).join(", ") || "any") + "). No need to re-upload — fix the filter and the files update automatically.</span><span class=\"spacer\"></span><button class=\"btn sm\" data-fixmap=\"" + esc(mapKey(zero[0])) + "\">Fix filter</button></div>";
+  }
   function filesTable() {
     if (!S.files.length) return '<div class="empty small">No reports uploaded yet.</div>';
     return '<div class="tbl-wrap"><table class="t"><thead><tr><th>Report</th><th>File</th><th>Station</th><th>Coverage</th><th class="n">Rows</th><th class="n">DOE rows used</th><th class="n">Subsidy</th><th>Status</th><th>Uploaded</th><th></th></tr></thead><tbody>' +
       S.files.map((f) => {
         const n = f._norm;
-        const status = f.incomplete ? '<span class="chip critical">Incomplete in storage</span>' : f._missing && f._missing.length ? '<span class="chip critical">' + ic("x") + "Missing: " + esc(f._missing.join(", ")) + "</span>" : n && n.issues.length ? '<span class="chip warn">' + ic("warn") + n.issues.length + " row issue(s)</span>" : '<span class="chip good">' + ic("check") + "Ready</span>";
+        const status = f.incomplete ? '<span class="chip critical">Incomplete in storage</span>' : f._missing && f._missing.length ? '<span class="chip critical">' + ic("x") + "Missing: " + esc(f._missing.join(", ")) + "</span>" : n && n.count === 0 ? '<span class="chip critical" title="No rows were counted. Open Data Mapping to check the DOE filter.">' + ic("x") + (f.side === "site" ? "0 DOE rows – check filter" : "No usable rows") + "</span>" : n && n.issues.length ? '<span class="chip warn">' + ic("warn") + n.issues.length + " row issue(s)</span>" : '<span class="chip good">' + ic("check") + "Ready</span>";
         const cov = n && n.cov ? (f.side === "site" ? R.msToDT(n.cov.start).slice(0, 16) + " → " + R.msToDT(n.cov.end).slice(0, 16) : R.msToDate(n.cov.start) + (R.msToDate(n.cov.end) !== R.msToDate(n.cov.start) ? " → " + R.msToDate(n.cov.end) : "")) : "—";
         return '<tr><td><span class="chip ' + (f.side === "site" ? "info" : "serious") + '" style="' + (f.side === "lb" ? "background:#fdeee7" : "") + '">' + (f.side === "site" ? "Site Report" : "LandBank") + "</span>" + (f.encrypted ? ' <span class="tag" title="Password-protected original">' + ic("lock").replace("<svg", '<svg style="width:10px;height:10px;vertical-align:-1px"') + " encrypted</span>" : "") +
           '</td><td><div style="font-weight:500">' + esc(f.name) + '</div><div class="xs muted">' + esc(f.sheet) + " · header row " + f.headerRow + '</div></td><td class="small">' + esc(n ? n.stations.map(stationLabel).join(", ") : "—") + '</td><td class="small">' + cov + '</td><td class="n">' + N(f.rowCount) + '</td><td class="n">' + (n ? N(n.count) : "—") + '</td><td class="n">' + (n ? P(n.subsidy) : "—") + "</td><td>" + status + '</td><td class="small">' + fmtTs(f.uploadedAt) + '<div class="xs muted">' + esc(who(f)) + '</div></td><td class="row" style="flex-wrap:nowrap"><button class="btn sm" data-prev="' + f.id + '">Preview</button><button class="btn sm danger" data-rm="' + f.id + '">Remove</button></td></tr>';
@@ -517,7 +525,7 @@
     const bytes = bytesIn || new Uint8Array(await file.arrayBuffer());
     const hash = await hashHex(bytes);
     const dupe = S.files.find((f) => f.hash === hash) || S.staged.find((f) => f.hash === hash);
-    if (dupe) throw new Error("Identical file already " + (dupe.uploadedAt ? "uploaded on " + fmtTs(dupe.uploadedAt) + " (" + dupe.name + ")" : "staged") + ". Duplicate upload blocked to prevent double counting.");
+    if (dupe) throw new Error("Identical file already " + (dupe.uploadedAt ? "uploaded on " + fmtTs(dupe.uploadedAt) + " (" + dupe.name + ")" : "staged") + ". Duplicate upload blocked to prevent double counting. Mapping and filter changes apply to uploaded files automatically, so there is no need to re-upload; to replace the file, remove it first.");
     let wb, encrypted = false;
     const isCsv = /\.csv$/i.test(file.name) || (bytes[0] !== 0x50 && bytes[0] !== 0xd0 && bytes[0] !== 0x09);
     if (window.OfficeDecrypt.isEncrypted(bytes)) {
@@ -636,21 +644,44 @@
       if (map.mop) { const v = r.c[map.mop.col]; mopVals[v] = (mopVals[v] || 0) + 1; }
       if (map.refCode && (!map.mop || !mopSel.length || mopSel.includes(R.nh(r.c[map.mop.col])))) { const v = r.c[map.refCode.col]; refVals[v] = (refVals[v] || 0) + 1; }
     }
+    if (g.side === "site" && map.refCode && !Object.keys(refVals).length) for (const f of g.files) for (const r of f.rows) { const v = r.c[map.refCode.col]; refVals[v] = (refVals[v] || 0) + 1; }
+    const doeLike = (v) => /doe|subsid|fuel ?sub/i.test(String(v == null ? "" : v));
+    const zeroFiles = g.side === "site" ? g.files.filter((f) => f._norm && f._norm.count === 0) : [];
+    const candMop = [], candRef = [];
+    if (zeroFiles.length) {
+      const fm = (S.settings.siteFilters.mop || []).map(fkey), fr = (S.settings.siteFilters.refCode || []).map(fkey);
+      for (const f of zeroFiles) for (const r of f.rows) {
+        const mv = map.mop ? r.c[map.mop.col] : null, rv = map.refCode ? r.c[map.refCode.col] : null;
+        if (!(doeLike(mv) || doeLike(rv))) continue;
+        if (map.mop && mv != null && mv !== "" && !fm.includes(fkey(mv)) && !candMop.includes(String(mv))) candMop.push(String(mv));
+        if (map.refCode && rv != null && rv !== "" && !fr.includes(fkey(rv)) && !candRef.includes(String(rv))) candRef.push(String(rv));
+      }
+    }
+    const zeroHtml = zeroFiles.length ? '<div class="banner err"><b>' + zeroFiles.length + " file(s) with this layout have 0 DOE subsidy rows</b> (" + esc(zeroFiles.map((f) => f.name).join(", ")) + "). The current filter is MOP Name: <b>" + esc((S.settings.siteFilters.mop || []).join(", ") || "any") + "</b>, Reference Code: <b>" + esc((S.settings.siteFilters.refCode || []).join(", ") || "any") + "</b>." +
+      ((candMop.length || candRef.length) ? "<div style=\"margin-top:6px\">These values in those files look like DOE subsidy: " + (candMop.length ? "MOP Name <b>" + esc(candMop.join(", ")) + "</b> " : "") + (candRef.length ? "Reference Code <b>" + esc(candRef.join(", ")) + "</b>" : "") + '. <button class="btn sm" id="filt-auto" style="margin-left:6px">Include these values</button></div>' : "<div style=\"margin-top:6px\">No values containing \"DOE\" were found. Tick the correct MOP Name and Reference Code values on the right, then Save filter.</div>") + "</div>" : "";
     el.innerHTML =
       '<div class="row gap16"><label class="small muted">Report layout</label><select id="map-sel">' + keys.map((k) => '<option value="' + k + '"' + (k === S.mapSel ? " selected" : "") + ">" + (groups[k].side === "site" ? "Site Report" : "LandBank") + " · " + groups[k].headers.length + " columns · " + groups[k].files.length + " file(s): " + esc(groups[k].files.map((f) => f.name).join(", ").slice(0, 90)) + "</option>").join("") + "</select></div>" +
-      (miss.length ? '<div class="banner err">Required field(s) not mapped: <b>' + esc(miss.join(", ")) + "</b>. Files with this layout are excluded from reconciliation until you assign them. If the report truly does not contain this field, ask for a report that does — the app will not assume values.</div>" : '<div class="banner info">All required fields are mapped. The same mapping is reused for every file with this column layout.</div>') +
+      zeroHtml + (miss.length ? '<div class="banner err">Required field(s) not mapped: <b>' + esc(miss.join(", ")) + "</b>. Files with this layout are excluded from reconciliation until you assign them. If the report truly does not contain this field, ask for a report that does — the app will not assume values.</div>" : '<div class="banner info">All required fields are mapped. The same mapping is reused for every file with this column layout.</div>') +
       '<div class="grid g2"><div class="card"><div class="hd"><h3>Column mapping</h3><span class="sub">' + (g.side === "site" ? "DOE Subsidy Site Report" : "LandBank Report") + '</span></div><div class="bd flush"><table class="t"><thead><tr><th>Field</th><th style="width:44%">Source column</th><th>Sample values</th></tr></thead><tbody>' +
       fields.map((f) => "<tr><td>" + esc(f.label) + (f.req ? ' <span class="chip critical" style="padding:0 6px">required</span>' : "") + "</td><td>" + opt(f.key) + '</td><td class="small muted">' + sample(f.key) + "</td></tr>").join("") +
       '</tbody></table></div><div class="bd row end"><button class="btn" id="map-reset">Re-detect automatically</button><button class="btn primary" id="map-save">Save mapping</button></div></div>' +
       '<div>' + (g.side === "site" ? '<div class="card gap16"><div class="hd"><h3>Which Site Report rows are DOE subsidy?</h3></div><div class="bd"><p class="small muted" style="margin-top:0">Only rows matching these values are reconciled. Others (e.g. GrabMart, FoodPanda) are excluded and listed in the file preview.</p>' +
-        '<div class="small" style="margin-bottom:4px"><b>MOP Name</b> values found:</div>' + (Object.keys(mopVals).length ? Object.entries(mopVals).sort((a, b) => b[1] - a[1]).map(([v, c]) => '<label class="row small"><input type="checkbox" data-mop="' + esc(v) + '"' + ((S.settings.siteFilters.mop || []).map(R.nh).includes(R.nh(v)) ? " checked" : "") + "> " + esc(v) + ' <span class="muted">(' + c + " rows)</span></label>").join("") : '<div class="small muted">MOP column not mapped — all rows included.</div>') +
-        '<div class="small" style="margin:10px 0 4px"><b>Reference Code</b> values among the selected MOP rows:</div>' + (Object.keys(refVals).length ? Object.entries(refVals).sort((a, b) => b[1] - a[1]).slice(0, 12).map(([v, c]) => '<label class="row small"><input type="checkbox" data-ref="' + esc(v) + '"' + ((S.settings.siteFilters.refCode || []).map(R.nh).includes(R.nh(v)) ? " checked" : "") + "> " + esc(v) + ' <span class="muted">(' + c + " rows)</span></label>").join("") : '<div class="small muted">Reference column not mapped.</div>') +
+        '<div class="small" style="margin-bottom:4px"><b>MOP Name</b> values found:</div>' + (Object.keys(mopVals).length ? Object.entries(mopVals).sort((a, b) => b[1] - a[1]).map(([v, c]) => '<label class="row small"><input type="checkbox" data-mop="' + esc(v) + '"' + ((S.settings.siteFilters.mop || []).map(fkey).includes(fkey(v)) ? " checked" : "") + "> " + esc(v) + ' <span class="muted">(' + c + " rows)</span></label>").join("") : '<div class="small muted">MOP column not mapped — all rows included.</div>') +
+        '<div class="small" style="margin:10px 0 4px"><b>Reference Code</b> values (DOE-like first):</div>' + (Object.keys(refVals).length ? Object.entries(refVals).sort((a, b) => (doeLike(b[0]) - doeLike(a[0])) || (b[1] - a[1])).slice(0, 15).map(([v, c]) => '<label class="row small"><input type="checkbox" data-ref="' + esc(v) + '"' + ((S.settings.siteFilters.refCode || []).map(fkey).includes(fkey(v)) ? " checked" : "") + "> " + esc(v) + ' <span class="muted">(' + c + " rows)</span></label>").join("") : '<div class="small muted">Reference column not mapped.</div>') +
         '<div class="row end" style="margin-top:10px"><button class="btn" id="filt-save"' + (S.canAdmin ? "" : " disabled title=\"Editors only\"") + ">Save filter</button></div></div></div>" : "") +
       '<div class="card"><div class="hd"><h3>How these columns are used</h3></div><div class="bd small">' + mappingNotes(g.side) + "</div></div></div></div>";
     $("#map-sel", el).addEventListener("change", (e) => { S.mapSel = e.target.value; render(); });
     $$("select[data-f]", el).forEach((s) => s.addEventListener("change", () => { const v = s.value; map[s.dataset.f] = !v ? null : v[0] === "c" ? { col: +v.slice(1) } : { meta: v.slice(1) }; S._draftMap = { key: g.key, map }; }));
     $("#map-reset", el).addEventListener("click", () => { S._draftMap = { key: g.key, map: R.autoMap(g.headers, g.sample.meta, g.side) }; saveMapping(g, S._draftMap.map, "re-detected"); });
     $("#map-save", el).addEventListener("click", () => saveMapping(g, (S._draftMap && S._draftMap.key === g.key) ? S._draftMap.map : map, "saved"));
+    const fa = $("#filt-auto", el);
+    if (fa) fa.addEventListener("click", async () => {
+      if (!canChange()) return;
+      const before = JSON.stringify(S.settings.siteFilters);
+      S.settings.siteFilters = { mop: (S.settings.siteFilters.mop || []).concat(candMop), refCode: (S.settings.siteFilters.refCode || []).concat(candRef) };
+      if (await put("settings", "main", { data: S.settings })) await audit("FILTER_CHANGE", "Site Report DOE filter extended from " + before + " to " + JSON.stringify(S.settings.siteFilters) + " (values found in " + zeroFiles.map((f) => f.name).join(", ") + ")");
+      recompute(); render(); toast("Filter updated — " + zeroFiles.map((f) => f.name + ": " + ((f._norm && f._norm.count) || 0) + " DOE rows").join("; "), "ok");
+    });
     const fs = $("#filt-save", el);
     if (fs) fs.addEventListener("click", async () => {
       if (!canChange()) return;
