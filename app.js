@@ -1103,7 +1103,7 @@
       "</div></div></div></div>";
     // --- bank payments card
     h += '<div class="card gap16"><div class="hd"><h3>Bank payments (reimbursements)</h3><span class="sub">' + livePays.length + " payment(s) · " + P(R.r2(livePays.reduce((a, p) => a + p.bank, 0))) + ' received</span><span class="grow"></span>' + (S.ro ? "" : '<button class="btn primary" id="pay-new">' + ic("check") + "Record bank payment</button>") + '</div><div class="bd flush"><div class="tbl-wrap" style="max-height:50vh"><table class="t"><thead><tr><th>Date received</th><th>Bank reference</th><th>Station</th><th>Period covered</th><th class="n">Reports</th><th class="n">Daily reports total</th><th class="n">Bank amount</th><th class="n">Difference</th><th>Recorded by</th><th></th></tr></thead><tbody>' +
-      (pays.length ? pays.map((p) => '<tr style="' + (p.void ? "opacity:.5;text-decoration:line-through" : "") + '"><td style="white-space:nowrap">' + esc(p.date) + "</td><td>" + esc(p.ref) + (p.remarks ? '<div class="xs muted">' + esc(p.remarks) + "</div>" : "") + (p.void ? '<div class="xs neg">Undone: ' + esc(p.voidReason) + "</div>" : "") + '</td><td class="small">' + esc(p.station) + '</td><td style="white-space:nowrap"><b>' + esc(p.from ? rangeTxt(p.from, p.to) : "—") + '</b></td><td class="n">' + p.days.length + '</td><td class="n">' + P(p.daysTotal) + '</td><td class="n"><b>' + P(p.bank) + '</b></td><td class="n ' + (Math.abs(p.diff) > 0.004 ? "neg" : "") + '">' + (Math.abs(p.diff) > 0.004 ? P(p.diff) : "—") + (p.note && Math.abs(p.diff) > 0.004 ? '<div class="xs muted" style="text-align:left">' + esc(p.note) + "</div>" : "") + '</td><td class="small">' + esc(who(p)) + '<div class="xs muted">' + fmtTs(p.ts) + '</div></td><td><div style="display:flex;flex-direction:column;gap:4px"><button class="btn sm" data-paydet="' + esc(p.batch) + '">Days</button>' + (!p.void && !S.ro ? '<button class="btn sm danger" data-payundo="' + esc(p.batch) + '">Undo</button>' : "") + "</div></td></tr>").join("")
+      (pays.length ? pays.map((p) => '<tr style="' + (p.void ? "opacity:.5;text-decoration:line-through" : "") + '"><td style="white-space:nowrap">' + esc(p.date) + "</td><td>" + (p.ref ? esc(p.ref) : '<span class="muted">—</span>') + (p.remarks ? '<div class="xs muted">' + esc(p.remarks) + "</div>" : "") + (p.void ? '<div class="xs neg">Undone: ' + esc(p.voidReason) + "</div>" : "") + '</td><td class="small">' + esc(p.station) + '</td><td style="white-space:nowrap"><b>' + esc(p.from ? rangeTxt(p.from, p.to) : "—") + '</b></td><td class="n">' + p.days.length + '</td><td class="n">' + P(p.daysTotal) + '</td><td class="n"><b>' + P(p.bank) + '</b></td><td class="n ' + (Math.abs(p.diff) > 0.004 ? "neg" : "") + '">' + (Math.abs(p.diff) > 0.004 ? P(p.diff) : "—") + (p.note && Math.abs(p.diff) > 0.004 ? '<div class="xs muted" style="text-align:left">' + esc(p.note) + "</div>" : "") + '</td><td class="small">' + esc(who(p)) + '<div class="xs muted">' + fmtTs(p.ts) + '</div></td><td><div style="display:flex;flex-direction:column;gap:4px"><button class="btn sm" data-paydet="' + esc(p.batch) + '">Days</button>' + (!p.void && !S.ro ? '<button class="btn sm danger" data-payundo="' + esc(p.batch) + '">Undo</button>' : "") + "</div></td></tr>").join("")
         : '<tr><td colspan="10"><div class="empty small">No bank payments recorded yet. Click <b>Record bank payment</b> and enter the amount from the bank statement.</div></td></tr>') +
       "</tbody></table></div></div></div>";
     // --- daily reports card
@@ -1162,12 +1162,12 @@
     const m = modal('<div class="mh"><h3>Record bank payment</h3><span class="sub small muted">match one bank credit to the daily LandBank reports it covers</span></div><div class="mb">' +
       '<div class="form"><label>Station</label><select id="py-st">' + stations.map((s) => '<option value="' + esc(s) + '"' + (s === station ? " selected" : "") + ">" + esc(stationLabel(s)) + "</option>").join("") + "</select>" +
       '<label>Date received in bank</label><input type="date" id="py-date" value="' + new Date().toISOString().slice(0, 10) + '">' +
-      '<label>Bank reference</label><input type="text" id="py-ref" placeholder="as shown on the bank statement">' +
+      '<label>Bank reference <span class="muted">(optional)</span></label><input type="text" id="py-ref" placeholder="optional — e.g. deposit or transaction no., if shown">' +
       '<label>Bank amount (₱)</label><div class="row"><input type="number" step="0.01" min="0" id="py-amt" value="' + (preTotal === "" ? "" : preTotal.toFixed(2)) + '" style="width:180px"><button class="btn sm" id="py-sug" type="button">Find matching days</button></div>' +
       '<label>Remarks</label><input type="text" id="py-rem"></div>' +
       '<div class="small" style="font-weight:600;margin:14px 0 6px">Unpaid daily LandBank reports — tick the days this payment covers</div><div id="py-list" class="tbl-wrap" style="max-height:38vh"></div>' +
       '<div id="py-sum" class="banner info" style="margin-top:12px"></div><div id="py-diff"></div>' +
-      '<label class="row small" style="margin-top:10px"><input type="checkbox" id="py-ok"> The bank date, reference and amount match the bank statement.</label>' +
+      '<label class="row small" style="margin-top:10px"><input type="checkbox" id="py-ok"> The bank date and amount match the bank statement.</label>' +
       '</div><div class="mf"><button class="btn" data-close>Cancel</button><button class="btn primary" id="py-save">' + ic("check") + "Save payment</button></div>", { wide: true });
     const days = () => unpaidAll.filter((d) => d.station === station).sort((a, b) => a.date.localeCompare(b.date));
     const drawList = () => {
@@ -1205,15 +1205,21 @@
       const date = $("#py-date", m.el).value, ref = $("#py-ref", m.el).value.trim(), rem = $("#py-rem", m.el).value.trim();
       const amt = R.r2(+$("#py-amt", m.el).value);
       if (!date) return toast("Enter the date received.", "err");
-      if (!ref) return toast("Enter the bank reference.", "err");
+      // bank reference is optional (often not shown on the bank statement)
       if (!(amt > 0)) return toast("Enter the bank amount.", "err");
       if (!chosen.length) return toast("Tick the daily LandBank reports this payment covers.", "err");
       const tot = R.r2(chosen.reduce((a, d) => a + d.amount, 0)), diff = R.r2(amt - tot);
       const note = $("#py-note", m.el) ? $("#py-note", m.el).value.trim() : "";
       if (Math.abs(diff) > 0.004 && !note) return toast("Explain the difference between the bank amount and the selected reports.", "err");
       if (!$("#py-ok", m.el).checked) return toast("Please confirm the payment matches the bank statement.", "err");
-      const dup = S.receipts.find((r) => !r.void && R.nh(r.ref) === R.nh(ref));
-      if (dup) return toast("Bank reference " + ref + " was already recorded on " + dup.dateReceived + ". Duplicate recognition blocked.", "err");
+      if (ref) {
+        const dup = S.receipts.find((r) => !r.void && r.ref && R.nh(r.ref) === R.nh(ref));
+        if (dup) return toast("Bank reference " + ref + " was already recorded on " + dup.dateReceived + ". Duplicate recognition blocked.", "err");
+      } else if (!m.el.dataset.dupok) {
+        const sums = {};
+        for (const r of S.receipts) if (!r.void && r.batch && r.station === station && r.dateReceived === date) sums[r.batch] = R.r2((sums[r.batch] || 0) + (+r.amount || 0));
+        if (Object.values(sums).some((v) => Math.abs(v - amt) < 0.005)) { m.el.dataset.dupok = "1"; return toast("A payment of " + P(amt) + " received " + date + " for " + station + " is already recorded. If this is a separate payment, click Save payment again.", "err"); }
+      }
       const batch = uid();
       const base = (extra) => clean(Object.assign({ station, ref, remarks: rem, dateReceived: date, batch, override: note }, extra, stamp()));
       for (const d of chosen) {
@@ -1225,14 +1231,14 @@
         S.receipts.push(Object.assign({ id }, doc)); await put("receipts", id, doc);
       }
       const ds = chosen.map((d) => d.date).sort();
-      await audit("BANK_PAYMENT", "Bank payment " + P(amt) + " ref " + ref + " received " + date + " for " + station + " matched to " + chosen.length + " daily LandBank report(s) " + rangeTxt(ds[0], ds[ds.length - 1]) + " (reports total " + P(tot) + (Math.abs(diff) > 0.004 ? ", difference " + P(diff) + ": " + note : ", exact match") + ")" + (rem ? ". " + rem : ""), batch);
+      await audit("BANK_PAYMENT", "Bank payment " + P(amt) + (ref ? " ref " + ref : " (no bank reference)") + " received " + date + " for " + station + " matched to " + chosen.length + " daily LandBank report(s) " + rangeTxt(ds[0], ds[ds.length - 1]) + " (reports total " + P(tot) + (Math.abs(diff) > 0.004 ? ", difference " + P(diff) + ": " + note : ", exact match") + ")" + (rem ? ". " + rem : ""), batch);
       S.dly.sel.clear(); m.close(); render(); toast("Bank payment saved — " + chosen.length + " daily report(s) marked reimbursed.", "ok");
     });
   }
   function paymentDetails(batch) {
     const rs = S.receipts.filter((r) => r.batch === batch).sort((a, b) => (a.lbDate || "9").localeCompare(b.lbDate || "9"));
     if (!rs.length) return;
-    modal('<div class="mh"><h3>Bank payment ' + esc(rs[0].ref) + "</h3></div><div class=\"mb\"><p class=\"small\">Received " + esc(rs[0].dateReceived) + " · " + esc(rs[0].station) + '</p><table class="t"><thead><tr><th>Daily LandBank report</th><th class="n">Amount</th><th>Note</th></tr></thead><tbody>' +
+    modal('<div class="mh"><h3>Bank payment ' + (rs[0].ref ? esc(rs[0].ref) : "received " + esc(rs[0].dateReceived)) + "</h3></div><div class=\"mb\"><p class=\"small\">Received " + esc(rs[0].dateReceived) + " · " + esc(rs[0].station) + '</p><table class="t"><thead><tr><th>Daily LandBank report</th><th class="n">Amount</th><th>Note</th></tr></thead><tbody>' +
       rs.map((r) => '<tr style="' + (r.void ? "opacity:.5;text-decoration:line-through" : "") + '"><td>' + (r.lbDate ? esc(r.lbDate) : "<i>Difference</i>") + '</td><td class="n">' + P(+r.amount) + '</td><td class="small muted">' + esc(r.diffOf ? r.remarks : "") + "</td></tr>").join("") +
       '</tbody><tfoot><tr><td>Bank amount</td><td class="n">' + P(R.r2(rs.filter((r) => !r.void).reduce((a, r) => a + (+r.amount || 0), 0))) + '</td><td></td></tr></tfoot></table></div><div class="mf"><button class="btn" data-close>Close</button></div>');
   }
@@ -1240,14 +1246,14 @@
     const rs = S.receipts.filter((r) => r.batch === batch && !r.void);
     if (!rs.length) return;
     const total = R.r2(rs.reduce((a, r) => a + (+r.amount || 0), 0));
-    const ok = await confirmBox("Undo bank payment " + rs[0].ref + "?", "<p>The payment of " + P(total) + " will be voided and its " + rs.filter((r) => r.lbKey).length + " daily LandBank report(s) return to <b>Unpaid</b>. The entry stays on record, struck through.</p>", "Undo payment", { danger: true, reason: "Reason" });
+    const ok = await confirmBox("Undo bank payment " + (rs[0].ref || "received " + rs[0].dateReceived) + "?", "<p>The payment of " + P(total) + " will be voided and its " + rs.filter((r) => r.lbKey).length + " daily LandBank report(s) return to <b>Unpaid</b>. The entry stays on record, struck through.</p>", "Undo payment", { danger: true, reason: "Reason" });
     if (!ok) return;
     for (const r of rs) {
       Object.assign(r, { void: true, voidReason: ok.reason, voidTs: nowIso(), voidBy: S.me.id || S.me.name || "" });
       const save = Object.assign({}, r); delete save.id; delete save._k;
       await put("receipts", r.id, clean(save));
     }
-    await audit("UNDO_BANK_PAYMENT", "Undid bank payment " + rs[0].ref + " (" + P(total) + ", " + rs[0].station + "). Reason: " + ok.reason, batch);
+    await audit("UNDO_BANK_PAYMENT", "Undid bank payment " + (rs[0].ref || "received " + rs[0].dateReceived) + " (" + P(total) + ", " + rs[0].station + "). Reason: " + ok.reason, batch);
     render();
   }
   function recvChip(s) { const c = /Fully/.test(s) ? "good" : /Over/.test(s) ? "critical" : /Partially|Approved/.test(s) ? "warn" : "neutral"; return '<span class="chip ' + c + '">' + esc(s) + "</span>"; }
@@ -1264,7 +1270,7 @@
       "<label>Claim (station · period)</label><select id=\"e-claim\">" + opts + "</select>" +
       "<label>Amount (₱)</label><input type=\"number\" step=\"0.01\" min=\"0\" id=\"e-amt\">" +
       "<label>" + (isR ? "Date received in bank" : "Date approved") + '</label><input type="date" id="e-date" value="' + new Date().toISOString().slice(0, 10) + '">' +
-      "<label>" + (isR ? "Bank / LandBank credit reference" : "Approval reference") + '</label><input type="text" id="e-ref">' +
+      "<label>" + (isR ? "Bank / LandBank credit reference" : "Approval reference") + ' <span class="muted">(optional)</span>' + '</label><input type="text" id="e-ref">' +
       '<label>Remarks</label><input type="text" id="e-rem"></div>' + '<p class="small muted">' + (isR ? "Each bank reference can be recorded only once, to prevent recognizing the same reimbursement twice." : "Approval is tracked separately from validation and payment.") + '</p><div id="e-warn"></div></div><div class="mf"><button class="btn" data-close>Cancel</button><button class="btn primary" id="e-ok">Save</button></div>');
     $("#e-ok", m.el).addEventListener("click", async () => {
       const [station, period] = ($("#e-claim", m.el).value || "|").split("|");
@@ -1272,9 +1278,9 @@
       if (!station || !period) return toast("Choose a claim.", "err");
       if (!(amount > 0)) return toast("Enter an amount greater than zero.", "err");
       if (!date) return toast("Enter the date.", "err");
-      if (!ref) return toast("Enter a reference number.", "err");
+      // reference is optional
       const list = isR ? S.receipts : S.approvals;
-      const dup = list.find((r) => !r.void && R.nh(r.ref) === R.nh(ref));
+      const dup = ref && list.find((r) => !r.void && r.ref && R.nh(r.ref) === R.nh(ref));
       if (dup) return toast("Reference " + ref + " was already recorded on " + (dup.dateReceived || dup.dateApproved) + " for " + dup.station + " " + dup.period + ". Duplicate recognition blocked.", "err");
       const row = all.find((r) => r.station === station && r.period === period);
       const cap = isR ? row.validated - row.reimbursed : row.validated - row.approved;
